@@ -15,6 +15,7 @@ from exceptions import APIResponseError, SendMessageError
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 VK_TOKEN = os.getenv('VK_TOKEN')
@@ -59,62 +60,69 @@ def send_message(vk, message):
         logger.debug('Сообщение успешно отправлено в VK.')
     except Exception as error:
         logger.error('Сбой при отправке сообщения в VK', error)
-        raise SendMessageError('Не удалось отправить сообщение в VK.')
+        raise SendMessageError(f'Ошибка отправки: {error}')
 
 
 def get_api_answer(timestamp):
     """Делает запрос к единственному эндпоинту API-сервиса."""
+    logger.info(f'Выполняется запрос к API {ENDPOINT}'
+                f'с параметром from_date={timestamp}')
     try:
         response = requests.get(ENDPOINT, headers=HEADERS,
                                 params={'from_date': timestamp})
-    except requests.RequestException:
-        logger.error('Сбой при запросе к эндпоинту.')
-        raise APIResponseError('Сбой при запросе к API.')
-    if response.status_code != HTTPStatus.OK:
-        logger.error('Ошибка от API.')
-        raise APIResponseError('Ошибка ответа от API Яндекс Практикума.')
-    try:
-        return response.json()
-    except ValueError:
-        logger.error('Ошибка парсинга JSON.')
-        raise APIResponseError('Не удалось обработать ответ API.')
+        if response.status_code != HTTPStatus.OK:
+            raise ConnectionError(
+                f'API {ENDPOINT} вернул статус {response.status_code} '
+                f'при запросе с from_date={timestamp}. '
+                f'Ответ: {response.text[:200]}')
+        data = response.json()
+        logger.info(f'Запрос к API {ENDPOINT} выполнен успешно.'
+                    f'Получено {len(data.get("homeworks", []))} работ')
+        return data
+    except requests.RequestException as error:
+        raise ConnectionError(
+            f'Сбой при запросе к API {ENDPOINT} с параметрами '
+            f'from_date={timestamp}. Ошибка: {error}')
+    except ValueError as error:
+        raise ValueError(
+            f'Не удалось обработать ответ API от {ENDPOINT}. '
+            f'Ответ: {response.text[:200]}. '
+            f'Ошибка: {error}')
 
 
 def check_response(response):
     """Проверяет ответ API на соответствие документации из урока."""
-    if response is None:
-        logger.error('Ответ API равен None.')
-        raise TypeError
+    logger.info('Начинаем проверку ответа API')
     if not isinstance(response, dict):
-        logger.error('Ответ API не является словарём.')
-        raise TypeError
+        raise TypeError(
+            'Ответ API не должен быть None.'
+            'Ожидался dict, получен None')
     if 'homeworks' not in response:
-        logger.error('В ответе API отсутствует ключ "homeworks."')
-        raise APIResponseError('В ответе API отсутствует ключ "homeworks."')
+        raise KeyError('В ответе API отсутствует ключ "homeworks."')
     homeworks = response['homeworks']
     if not isinstance(homeworks, list):
-        logger.error('Значение по ключу "homeworks" не является списком.')
-        raise TypeError
+        raise TypeError('Значение по ключу "homeworks" должно быть списком,'
+                        f'а получен {type(homeworks).__name__}')
     logger.debug('Ответ API успешно проверен.'
                  f'Получено {len(homeworks)} работ.')
+    logger.info('Ответ API успешно проверен.'
+                f'Получено {len(homeworks)} работ.')
     return homeworks
 
 
 def parse_status(homework):
     """Извлекает из информации о домашней работе статус этой работы."""
+    logger.info('Начинаем получать статус домашней работы')
     if 'homework_name' not in homework:
-        logger.error('В домашней работе отсутствует ключ "homework_name".')
-        raise APIResponseError('Отсутствует ключ "homework_name".')
+        raise KeyError('Отсутствует ключ "homework_name".')
     homework_name = homework.get('homework_name')
     status = homework.get('status')
     if 'status' not in homework:
-        logger.error(f'Неизвестный статус домашней работы: {status}.')
-        raise APIResponseError('Неизвестный статус работы.')
+        raise KeyError('Неизвестный статус работы.')
     if status not in HOMEWORK_VERDICTS:
-        logger.error(f'Неожиданный статус домашней работы: "{status}"'
-                     f'для работы "{homework_name}".')
         raise APIResponseError(f'Неизвестный статус работы: {status}')
     verdict = HOMEWORK_VERDICTS[status]
+    logger.info(f'Получен статус домашней работы:{status}')
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
@@ -128,6 +136,8 @@ def main():
     vk = vk_session.get_api()
     timestamp = int(time.time())
 
+    last_error_message = None
+
     while True:
         try:
             response = get_api_answer(timestamp)
@@ -136,31 +146,25 @@ def main():
                 homework = homeworks[0]
                 message = parse_status(homework)
                 send_message(vk, message)
-            timestamp = response.get('current_date')
-        except APIResponseError:
-            logger.debug('В ответе API нет новых статусов.')
-
-        except TypeError as error:
-            message = f'Ошибка типа данных в ответе API: {error}'
-            logger.error(message)
-
-        except APIResponseError as error:
-            message = f'Сбой в работе программы: {error}'
-            logger.error(message)
-
-        except SendMessageError as error:
-            message = f'Сбой при отправке сообщения: {error}'
-            logger.error(message)
-
+            timestamp = response.get('current_date', int(time.time()))
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
-            send_message(vk, message)
+            logger.error(message)
+            if message != last_error_message:
+                try:
+                    send_message(vk, message)
+                    last_error_message = message
+                except Exception as send_error:
+                    logger.error('Не удалось отправить сообщение об ошибке:'
+                                 f'{send_error}')
+            else:
+                logger.debug('Сообщение об ошибке уже было отправлено ранее')
 
-        time.sleep(RETRY_PERIOD)
+        finally:
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
-    logger.setLevel(logging.DEBUG)
     stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter(
