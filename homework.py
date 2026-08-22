@@ -9,7 +9,7 @@ import requests
 import vk_api
 from dotenv import load_dotenv
 
-from exceptions import APIResponseError, SendMessageError
+from exceptions import APIResponseError
 
 
 load_dotenv()
@@ -60,7 +60,6 @@ def send_message(vk, message):
         logger.debug('Сообщение успешно отправлено в VK.')
     except Exception as error:
         logger.error('Сбой при отправке сообщения в VK', error)
-        raise SendMessageError(f'Ошибка отправки: {error}')
 
 
 def get_api_answer(timestamp):
@@ -70,24 +69,19 @@ def get_api_answer(timestamp):
     try:
         response = requests.get(ENDPOINT, headers=HEADERS,
                                 params={'from_date': timestamp})
-        if response.status_code != HTTPStatus.OK:
-            raise ConnectionError(
-                f'API {ENDPOINT} вернул статус {response.status_code} '
-                f'при запросе с from_date={timestamp}. '
-                f'Ответ: {response.text[:200]}')
         data = response.json()
-        logger.info(f'Запрос к API {ENDPOINT} выполнен успешно.'
-                    f'Получено {len(data.get("homeworks", []))} работ')
-        return data
     except requests.RequestException as error:
         raise ConnectionError(
-            f'Сбой при запросе к API {ENDPOINT} с параметрами '
+            f'Сбой при запросе к API {ENDPOINT} с параметрами'
             f'from_date={timestamp}. Ошибка: {error}')
-    except ValueError as error:
-        raise ValueError(
-            f'Не удалось обработать ответ API от {ENDPOINT}. '
-            f'Ответ: {response.text[:200]}. '
-            f'Ошибка: {error}')
+    if response.status_code != HTTPStatus.OK:
+        raise APIResponseError(
+            f'API {ENDPOINT} вернул статус {response.status_code}'
+            f'при запросе с from_date={timestamp}.'
+            f'({response.reason}) при запросе с from_date={timestamp}.')
+    logger.info(f'Запрос к API {ENDPOINT} выполнен успешно.'
+                f'Получено {len(data.get("homeworks", []))} работ')
+    return data
 
 
 def check_response(response):
@@ -95,8 +89,7 @@ def check_response(response):
     logger.info('Начинаем проверку ответа API')
     if not isinstance(response, dict):
         raise TypeError(
-            'Ответ API не должен быть None.'
-            'Ожидался dict, получен None')
+            'Ожидался dict, а получен {type(homeworks).__name__}')
     if 'homeworks' not in response:
         raise KeyError('В ответе API отсутствует ключ "homeworks."')
     homeworks = response['homeworks']
@@ -116,9 +109,9 @@ def parse_status(homework):
     if 'homework_name' not in homework:
         raise KeyError('Отсутствует ключ "homework_name".')
     homework_name = homework.get('homework_name')
-    status = homework.get('status')
     if 'status' not in homework:
-        raise KeyError('Неизвестный статус работы.')
+        raise KeyError('Отсутствует ключ "status".')
+    status = homework.get('status')
     if status not in HOMEWORK_VERDICTS:
         raise APIResponseError(f'Неизвестный статус работы: {status}')
     verdict = HOMEWORK_VERDICTS[status]
@@ -151,12 +144,8 @@ def main():
             message = f'Сбой в работе программы: {error}'
             logger.error(message)
             if message != last_error_message:
-                try:
-                    send_message(vk, message)
-                    last_error_message = message
-                except Exception as send_error:
-                    logger.error('Не удалось отправить сообщение об ошибке:'
-                                 f'{send_error}')
+                send_message(vk, message)
+                last_error_message = message
             else:
                 logger.debug('Сообщение об ошибке уже было отправлено ранее')
 
