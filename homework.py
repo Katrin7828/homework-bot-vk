@@ -89,7 +89,7 @@ def check_response(response):
     logger.info('Начинаем проверку ответа API')
     if not isinstance(response, dict):
         raise TypeError(
-            'Ожидался dict, а получен {type(homeworks).__name__}')
+            f'Ожидался dict, а получен {type(response).__name__}')
     if 'homeworks' not in response:
         raise KeyError('В ответе API отсутствует ключ "homeworks."')
     homeworks = response['homeworks']
@@ -98,8 +98,6 @@ def check_response(response):
                         f'а получен {type(homeworks).__name__}')
     logger.debug('Ответ API успешно проверен.'
                  f'Получено {len(homeworks)} работ.')
-    logger.info('Ответ API успешно проверен.'
-                f'Получено {len(homeworks)} работ.')
     return homeworks
 
 
@@ -139,6 +137,7 @@ def main():
                 homework = homeworks[0]
                 message = parse_status(homework)
                 send_message(vk, message)
+                last_error_message = None
             timestamp = response.get('current_date', int(time.time()))
         except Exception as error:
             message = f'Сбой в работе программы: {error}'
